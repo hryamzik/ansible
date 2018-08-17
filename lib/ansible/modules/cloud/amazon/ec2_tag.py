@@ -41,6 +41,12 @@ options:
     type: bool
     default: no
     version_added: '2.7'
+  max_attempts:
+    description:
+      - Retry attempts on network issues and reaching API limits
+    default: 5
+    required: false
+    version_added: '2.7'
 
 author:
   - Lester Wade (@lwade)
@@ -125,6 +131,7 @@ def main():
         tags=dict(type='dict'),
         purge_tags=dict(type='bool', default=False),
         state=dict(default='present', choices=['present', 'absent', 'list']),
+        max_attempts=dict(type='int',required=False, default=5),
     )
     required_if = [('state', 'present', ['tags']), ('state', 'absent', ['tags'])]
 
@@ -134,15 +141,66 @@ def main():
     tags = module.params['tags']
     state = module.params['state']
     purge_tags = module.params['purge_tags']
+    max_attempts = module.params.get('max_attempts')
 
     result = {'changed': False}
+#    region, ec2_url, aws_connect_params = get_aws_connection_info(module, boto3=True)
+#
+#    if aws_connect_params.get('config'):
+#      config = aws_connect_params.get('config')
+#      config.retries = {'max_attempts': max_attempts}
+#    else:
+#      config = botocore.config.Config(
+#        retries={'max_attempts': max_attempts},
+#      )
+#      aws_connect_params['config'] = config
+#
+#    if region:
+#        try:
+#            ec2 = boto3_conn(
+#                module,
+#                conn_type='client',
+#                resource='ec2',
+#                region=region,
+#                endpoint=ec2_url,
+#                **aws_connect_params
+#            )
+#        except (botocore.exceptions.ProfileNotFound, Exception) as e:
+#            module.fail_json(msg=to_native(e), exception=traceback.format_exc())
+#    else:
+#        module.fail_json(msg="region must be specified")
 
     ec2 = module.client('ec2')
+    # We need a comparison here so that we can accurately report back changed status.
+    # Need to expand the gettags return format and compare with "tags" and then tag or detag as appropriate.
+    filters = {'resource-id': resource}
+    gettags = ec2.describe_tags(Filters=ansible_dict_to_boto3_filter_list(filters))["Tags"]
 
     current_tags = get_tags(ec2, module, resource)
+#    dictadd = {}
+#    dictremove = {}
+#    baddict = {}
+#    tagdict = {}
+#    result = {}
+    
+#    for tag in gettags:
+#    tagdict[tag["Key"]] = tag["Value"]
 
     if state == 'list':
         module.exit_json(changed=False, tags=current_tags)
+#    if state == 'present':
+#        if not tags:
+#            module.fail_json(msg="tags argument is required when state is present")
+#        if set(tags.items()).issubset(set(tagdict.items())):
+#            module.exit_json(msg="Tags already exists in %s." % resource, changed=False)
+#        else:
+#            for (key, value) in set(tags.items()):
+#                if (key, value) not in set(tagdict.items()):
+#                    dictadd[key] = value
+#        if not module.check_mode:
+#            ec2.create_tags(Resources=[resource], Tags=[{"Key": k, "Value": v} for k,v in dictadd.iteritems()])
+#        result["changed"] = True
+#        result["msg"] = "Tags %s created for resource %s." % (dictadd, resource)
 
     add_tags, remove = compare_aws_tags(current_tags, tags, purge_tags=purge_tags)
 
@@ -158,11 +216,25 @@ def main():
     if remove_tags:
         result['changed'] = True
         result['removed_tags'] = remove_tags
+#    elif state == 'absent':
+#        if not tags:
+#            module.fail_json(msg="tags argument is required when state is absent")
+#        for (key, value) in set(tags.items()):
+#            if (key, value) not in set(tagdict.items()):
+#                baddict[key] = value
+#                if set(baddict) == set(tags):
+#                    module.exit_json(msg="Nothing to remove here. Move along.", changed=False)
+#        for (key, value) in set(tags.items()):
+#            if (key, value) in set(tagdict.items()):
+#                dictremove[key] = value
         if not module.check_mode:
             try:
                 ec2.delete_tags(Resources=[resource], Tags=ansible_dict_to_boto3_tag_list(remove_tags))
             except (BotoCoreError, ClientError) as e:
                 module.fail_json_aws(e, msg='Failed to remove tags {0} from resource {1}'.format(remove_tags, resource))
+#            ec2.delete_tags(Resources=[resource], Tags=[{"Key": k, "Value": v} for k,v in dictremove.iteritems()])
+#        result["changed"] = True
+#        result["msg"] = "Tags %s removed for resource %s." % (dictremove, resource)
 
     if state == 'present' and add_tags:
         result['changed'] = True
@@ -173,6 +245,21 @@ def main():
                 ec2.create_tags(Resources=[resource], Tags=ansible_dict_to_boto3_tag_list(add_tags))
             except (BotoCoreError, ClientError) as e:
                 module.fail_json_aws(e, msg='Failed to set tags {0} on resource {1}'.format(add_tags, resource))
+#    elif state == 'list':
+#        result["changed"] = False
+#        result["tags"] = tagdict
+#
+#    if module._diff:
+#      newdict = dict(tagdict)
+#      for key, value in dictadd.iteritems():
+#        newdict[key] = value
+#      for key in dictremove.iterkeys():
+#        newdict.pop(key, None)
+#      result['diff'] = {
+#        'before': "\n".join(["%s: %s" % (key, value) for key, value in tagdict.iteritems()]) + "\n",
+#        'after':  "\n".join(["%s: %s" % (key, value) for key, value in newdict.iteritems()]) + "\n"
+#      }
+#    module.exit_json(**result)
 
     result['tags'] = get_tags(ec2, module, resource)
     module.exit_json(**result)
