@@ -113,6 +113,7 @@ from ansible.module_utils.ec2 import boto3_tag_list_to_ansible_dict, ansible_dic
 
 try:
     from botocore.exceptions import BotoCoreError, ClientError
+    import botocore
 except:
     pass    # Handled by AnsibleAWSModule
 
@@ -135,24 +136,16 @@ def main():
     )
     required_if = [('state', 'present', ['tags']), ('state', 'absent', ['tags'])]
 
-    module = AnsibleAWSModule(argument_spec=argument_spec, required_if=required_if, supports_check_mode=True)
-
-    resource = module.params['resource']
-    tags = module.params['tags']
-    state = module.params['state']
-    purge_tags = module.params['purge_tags']
-    max_attempts = module.params.get('max_attempts')
-
-    result = {'changed': False}
 #    region, ec2_url, aws_connect_params = get_aws_connection_info(module, boto3=True)
 #
 #    if aws_connect_params.get('config'):
 #      config = aws_connect_params.get('config')
 #      config.retries = {'max_attempts': max_attempts}
 #    else:
-#      config = botocore.config.Config(
-#        retries={'max_attempts': max_attempts},
-#      )
+    # config = botocore.config.Config(
+    #     retries={'max_attempts': max_attempts},
+    #     )
+    # argument_spec['config'] = config
 #      aws_connect_params['config'] = config
 #
 #    if region:
@@ -170,37 +163,41 @@ def main():
 #    else:
 #        module.fail_json(msg="region must be specified")
 
+    module = AnsibleAWSModule(argument_spec=argument_spec, required_if=required_if, supports_check_mode=True)
+
+    resource = module.params['resource']
+    tags = module.params['tags']
+    state = module.params['state']
+    purge_tags = module.params['purge_tags']
+    max_attempts = module.params['max_attempts']
+
+    result = {'changed': False}
+
+    # config = botocore.config.Config(
+    # config = {
+    #     "retries": {'max_attempts': max_attempts}
+    # }
+    # params = {"config": config}
+    # retries={'max_attempts': max_attempts}
+
     ec2 = module.client('ec2')
-    # We need a comparison here so that we can accurately report back changed status.
-    # Need to expand the gettags return format and compare with "tags" and then tag or detag as appropriate.
-    filters = {'resource-id': resource}
-    gettags = ec2.describe_tags(Filters=ansible_dict_to_boto3_filter_list(filters))["Tags"]
+    # module.fail_json(msg="%s" % ec2['params'])
+#    # We need a comparison here so that we can accurately report back changed status.
+#    # Need to expand the gettags return format and compare with "tags" and then tag or detag as appropriate.
+#    filters = {'resource-id': resource}
+#    gettags = ec2.describe_tags(Filters=ansible_dict_to_boto3_filter_list(filters))["Tags"]
 
     current_tags = get_tags(ec2, module, resource)
 #    dictadd = {}
 #    dictremove = {}
 #    baddict = {}
 #    tagdict = {}
-#    result = {}
     
 #    for tag in gettags:
 #    tagdict[tag["Key"]] = tag["Value"]
 
     if state == 'list':
         module.exit_json(changed=False, tags=current_tags)
-#    if state == 'present':
-#        if not tags:
-#            module.fail_json(msg="tags argument is required when state is present")
-#        if set(tags.items()).issubset(set(tagdict.items())):
-#            module.exit_json(msg="Tags already exists in %s." % resource, changed=False)
-#        else:
-#            for (key, value) in set(tags.items()):
-#                if (key, value) not in set(tagdict.items()):
-#                    dictadd[key] = value
-#        if not module.check_mode:
-#            ec2.create_tags(Resources=[resource], Tags=[{"Key": k, "Value": v} for k,v in dictadd.iteritems()])
-#        result["changed"] = True
-#        result["msg"] = "Tags %s created for resource %s." % (dictadd, resource)
 
     add_tags, remove = compare_aws_tags(current_tags, tags, purge_tags=purge_tags)
 
@@ -216,6 +213,12 @@ def main():
     if remove_tags:
         result['changed'] = True
         result['removed_tags'] = remove_tags
+        if not module.check_mode:
+            try:
+                ec2.delete_tags(Resources=[resource], Tags=ansible_dict_to_boto3_tag_list(remove_tags))
+            except (BotoCoreError, ClientError) as e:
+                module.fail_json_aws(e, msg='Failed to remove tags {0} from resource {1}'.format(remove_tags, resource))
+#
 #    elif state == 'absent':
 #        if not tags:
 #            module.fail_json(msg="tags argument is required when state is absent")
@@ -227,11 +230,6 @@ def main():
 #        for (key, value) in set(tags.items()):
 #            if (key, value) in set(tagdict.items()):
 #                dictremove[key] = value
-        if not module.check_mode:
-            try:
-                ec2.delete_tags(Resources=[resource], Tags=ansible_dict_to_boto3_tag_list(remove_tags))
-            except (BotoCoreError, ClientError) as e:
-                module.fail_json_aws(e, msg='Failed to remove tags {0} from resource {1}'.format(remove_tags, resource))
 #            ec2.delete_tags(Resources=[resource], Tags=[{"Key": k, "Value": v} for k,v in dictremove.iteritems()])
 #        result["changed"] = True
 #        result["msg"] = "Tags %s removed for resource %s." % (dictremove, resource)
@@ -245,21 +243,39 @@ def main():
                 ec2.create_tags(Resources=[resource], Tags=ansible_dict_to_boto3_tag_list(add_tags))
             except (BotoCoreError, ClientError) as e:
                 module.fail_json_aws(e, msg='Failed to set tags {0} on resource {1}'.format(add_tags, resource))
-#    elif state == 'list':
-#        result["changed"] = False
-#        result["tags"] = tagdict
 #
-#    if module._diff:
-#      newdict = dict(tagdict)
-#      for key, value in dictadd.iteritems():
-#        newdict[key] = value
-#      for key in dictremove.iterkeys():
-#        newdict.pop(key, None)
-#      result['diff'] = {
-#        'before': "\n".join(["%s: %s" % (key, value) for key, value in tagdict.iteritems()]) + "\n",
-#        'after':  "\n".join(["%s: %s" % (key, value) for key, value in newdict.iteritems()]) + "\n"
-#      }
-#    module.exit_json(**result)
+#    if state == 'present':
+#        if not tags:
+#            module.fail_json(msg="tags argument is required when state is present")
+#        if set(tags.items()).issubset(set(tagdict.items())):
+#            module.exit_json(msg="Tags already exists in %s." % resource, changed=False)
+#        else:
+#            for (key, value) in set(tags.items()):
+#                if (key, value) not in set(tagdict.items()):
+#                    dictadd[key] = value
+#        if not module.check_mode:
+#            ec2.create_tags(Resources=[resource], Tags=[{"Key": k, "Value": v} for k,v in dictadd.iteritems()])
+#        result["changed"] = True
+#        result["msg"] = "Tags %s created for resource %s." % (dictadd, resource)
+
+
+# diff functionality is broken in AnsibleAWSModule so check diff mode only when it's available
+# https://github.com/ansible/ansible/issues/43377
+    # from pprint import pprint
+    # pprint(vars(module))
+    # from ansible.module_utils.basic import AnsibleModule
+    # module2 = AnsibleModule(argument_spec=argument_spec, supports_check_mode=True)
+    # # if hasattr(module, '_diff') and module._diff:
+    # if module2._diff:
+    #     newdict = dict(current_tags)
+    #     for key, value in add_tags.items():
+    #         newdict[key] = value
+    #     for key in remove_tags.keys():
+    #         newdict.pop(key, None)
+    #     result['diff'] = {
+    #         'before': "\n".join(["%s: %s" % (key, value) for key, value in current_tags.items()]) + "\n",
+    #         'after': "\n".join(["%s: %s" % (key, value) for key, value in newdict.items()]) + "\n"
+    #     }
 
     result['tags'] = get_tags(ec2, module, resource)
     module.exit_json(**result)
